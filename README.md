@@ -35,7 +35,22 @@ The second command allows the user to specify the different platforms.
 It also tags the image with the provided name
 and pushes it to dockerhub.
 
+---
 
+## Provenance & License
+
+This repository is maintained by **Ascend Systems for Health** as a derivative
+of **PSS Insight v2.0**, originally developed by **IntelliSOFT Consulting** under
+the **USAID MTaPS Program** (implemented by Management Sciences for Health), with
+the indicator framework developed under the preceding USAID SIAPS Program. The
+software is built on [DHIS2](https://dhis2.org).
+
+This software is distributed under the **GNU General Public License v3.0
+(GPL-3.0)**. Modifications distributed by Ascend Systems for Health are likewise
+licensed under GPL-3.0, and source is made available in accordance with the
+license. See the [LICENSE](./LICENSE) and [NOTICE](./NOTICE) files for details.
+
+*Ascend Systems for Health · https://ascendsystemsforhealth.com*
 
 
 
