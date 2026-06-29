@@ -1,0 +1,39 @@
+PSS Insight v2.0 — Derivative Work
+==================================
+
+This repository is a derivative work maintained by Ascend Systems for Health.
+
+ORIGINAL WORK
+-------------
+PSS Insight v2.0 was originally developed by IntelliSOFT Consulting Limited
+under the USAID Medicines, Technologies, and Pharmaceutical Services (MTaPS)
+Program, implemented by Management Sciences for Health (MSH). The underlying
+indicator framework was developed under the preceding USAID SIAPS Program.
+
+The software is built on DHIS2 (https://dhis2.org), itself licensed under the
+BSD 3-Clause license, and is distributed under the GNU General Public License
+version 3.0 (GPL-3.0).
+
+DERIVATIVE WORK
+---------------
+Modifications, configuration, and deployment of this software for country and
+institutional use are maintained by:
+
+    Ascend Systems for Health
+    https://ascendsystemsforhealth.com
+
+Ascend Systems for Health operates this software as a derivative under the
+terms of the GPL-3.0. All modifications distributed by Ascend Systems for
+Health are themselves licensed under GPL-3.0, and source code is made
+available in accordance with the license.
+
+LICENSE
+-------
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See the LICENSE file in this repository for the full text.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
