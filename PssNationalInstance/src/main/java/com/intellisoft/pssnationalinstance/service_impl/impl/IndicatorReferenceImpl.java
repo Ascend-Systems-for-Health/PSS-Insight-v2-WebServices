@@ -1,5 +1,26 @@
+/*
+ * PSS Insight v2.0 — Derivative Work
+ * Copyright (C) 2024-2025 Ascend Systems for Health.
+ *
+ * Based on PSS Insight v2.0, originally developed by IntelliSOFT Consulting
+ * Limited under the USAID MTaPS Program (implemented by Management Sciences
+ * for Health). Built on DHIS2 (https://dhis2.org, BSD 3-Clause).
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation, either version 3 of the License, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program. If not, see <https://www.gnu.org/licenses/>.
+ */
 package com.intellisoft.pssnationalinstance.service_impl.impl;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.intellisoft.pssnationalinstance.*;
 import com.intellisoft.pssnationalinstance.model.Response;
@@ -12,6 +33,7 @@ import lombok.extern.log4j.Log4j2;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 
@@ -28,10 +50,18 @@ public class IndicatorReferenceImpl implements IndicatorReferenceService {
 
     private final EnvUrlConstants envUrlConstants;
     private final FormatterClass formatterClass = new FormatterClass();
+    // Spring-managed ObjectMapper (carries the ParameterNamesModule that the
+    // remote WebClient deserialization already relies on) — used by the local
+    // Hub-fallback to map dataStore content into DbIndicatorDetails.
+    private final ObjectMapper objectMapper;
     @Value("${dhis.username}")
     private String username;
     @Value("${dhis.password}")
     private String password;
+
+    // Known placeholder/test record present in the local master_indicator_templates
+    // metadata; excluded from the Hub-fallback so only genuine indicators surface.
+    private static final String JUNK_INDICATOR_CODE = "nfkjevew";
 
     @Override
     public Results addIndicatorDictionary(DbIndicatorDetails dbIndicatorDetails) {
@@ -91,13 +121,149 @@ public class IndicatorReferenceImpl implements IndicatorReferenceService {
     public Results listIndicatorDictionary() {
 
         try {
-            return new Results(200, getIndicatorList());
+            return new Results(200, resolveIndicatorReferences());
         } catch (Exception e) {
-            log.error("There was an issue Fetching indicators from the data dictionary");
+            log.error("There was an issue Fetching indicators from the data dictionary", e);
         }
 
 
         return new Results(400, "There was an issue with the request. Try again later.");
+    }
+
+    /**
+     * Resolve the indicator dictionary with a remote-first, local-fallback strategy.
+     *
+     * <p>1. Primary path (unchanged): fetch from the remote International/Hub instance
+     * via {@link #getIndicatorList()} ({@code INTERNATIONAL_BASE_URL}). When a Hub is
+     * deployed and reachable this returns the published dictionary and is used verbatim —
+     * the fallback below is never consulted, so the original behaviour resumes
+     * automatically with no further code change.
+     *
+     * <p>2. Additive fallback: when the Hub is unreachable (connection failure) or returns
+     * an empty list — as is the case before a Hub is provisioned — surface the genuine
+     * indicator framework already published in this national instance's own DHIS2 dataStore
+     * namespace {@code master_indicator_templates} (latest version), mapped to the same
+     * response shape the Indicator Dictionary UI expects.
+     */
+    private List<DbIndicatorDetails> resolveIndicatorReferences() {
+        List<DbIndicatorDetails> remoteList = getIndicatorList();
+        if (remoteList != null && !remoteList.isEmpty()) {
+            return remoteList;
+        }
+        log.info("Indicator dictionary Hub source unavailable/empty — falling back to local master_indicator_templates.");
+        return getIndicatorListFromLocalTemplate();
+    }
+
+    /**
+     * Hub-fallback source: read the latest published version of the local
+     * {@code master_indicator_templates} dataStore namespace and return its
+     * {@code indicatorDescriptions}, excluding placeholder/test records.
+     */
+    private List<DbIndicatorDetails> getIndicatorListFromLocalTemplate() {
+        try {
+            String localBaseUrl = envUrlConstants.getNATIONAL_PUBLISHED_VERSIONS();
+            String latestVersion = getLatestLocalTemplateVersion(localBaseUrl);
+            if (latestVersion == null) {
+                log.warn("No local master_indicator_templates versions found for Hub-fallback.");
+                return Collections.emptyList();
+            }
+
+            DbMetadataJson dbMetadataJson = getLocalMetadata(localBaseUrl + latestVersion);
+            if (dbMetadataJson == null || dbMetadataJson.getMetadata() == null) {
+                return Collections.emptyList();
+            }
+
+            Object descriptions = dbMetadataJson.getMetadata().getIndicatorDescriptions();
+            if (descriptions == null) {
+                return Collections.emptyList();
+            }
+
+            List<DbIndicatorDetails> mapped = objectMapper.convertValue(
+                    descriptions, new TypeReference<List<DbIndicatorDetails>>() {
+                    });
+
+            List<DbIndicatorDetails> cleaned = new ArrayList<>();
+            for (DbIndicatorDetails indicator : mapped) {
+                Object codeObj = indicator.getIndicatorCode();
+                String code = codeObj != null ? codeObj.toString().trim() : "";
+                if (code.isEmpty() || JUNK_INDICATOR_CODE.equalsIgnoreCase(code)) {
+                    continue; // skip placeholder/test records
+                }
+                cleaned.add(indicator);
+            }
+
+            log.info("Indicator dictionary Hub-fallback: returning {} indicators from local master_indicator_templates/{}.",
+                    cleaned.size(), latestVersion);
+            return cleaned;
+        } catch (Exception e) {
+            log.error("An error occurred while reading the local master_indicator_templates Hub-fallback", e);
+        }
+        return Collections.emptyList();
+    }
+
+    /**
+     * Fetch a single local master_indicator_templates version document as
+     * {@link DbMetadataJson}. A published template version is large (&gt;1&nbsp;MB),
+     * so the default 256&nbsp;KB WebClient in-memory buffer is raised here. The shared
+     * {@link #getMetadata(String)} is intentionally left untouched for the Hub /
+     * update / delete paths.
+     */
+    private DbMetadataJson getLocalMetadata(String url) {
+        try {
+            String auth = username + ":" + password;
+            byte[] encodedAuth = Base64.getEncoder().encode(auth.getBytes(StandardCharsets.UTF_8));
+            String authHeader = "Basic " + new String(encodedAuth);
+
+            ExchangeStrategies strategies = ExchangeStrategies.builder()
+                    .codecs(c -> c.defaultCodecs().maxInMemorySize(64 * 1024 * 1024))
+                    .build();
+
+            return WebClient.builder()
+                    .baseUrl(url)
+                    .exchangeStrategies(strategies)
+                    .defaultHeader(HttpHeaders.AUTHORIZATION, authHeader)
+                    .build()
+                    .get().retrieve().bodyToMono(DbMetadataJson.class).block();
+        } catch (Exception e) {
+            log.error("An error occurred while reading the local template metadata", e);
+        }
+        return null;
+    }
+
+    /**
+     * Resolve the highest numeric version key in the local master_indicator_templates
+     * namespace (e.g. "411"). Non-numeric keys (e.g. "vv2", "v15") are ignored.
+     */
+    private String getLatestLocalTemplateVersion(String namespaceUrl) {
+        try {
+            String auth = username + ":" + password;
+            byte[] encodedAuth = Base64.getEncoder().encode(auth.getBytes(StandardCharsets.UTF_8));
+            String authHeader = "Basic " + new String(encodedAuth);
+
+            List<?> keys = WebClient.builder().baseUrl(namespaceUrl)
+                    .defaultHeader(HttpHeaders.AUTHORIZATION, authHeader).build()
+                    .get().retrieve().bodyToMono(List.class).block();
+
+            if (keys == null || keys.isEmpty()) {
+                return null;
+            }
+
+            Integer maxVersion = null;
+            for (Object key : keys) {
+                try {
+                    int v = Integer.parseInt(String.valueOf(key).trim());
+                    if (maxVersion == null || v > maxVersion) {
+                        maxVersion = v;
+                    }
+                } catch (NumberFormatException ignored) {
+                    // non-numeric version keys are not eligible
+                }
+            }
+            return maxVersion != null ? String.valueOf(maxVersion) : null;
+        } catch (Exception e) {
+            log.error("An error occurred while resolving the latest local template version", e);
+        }
+        return null;
     }
 
     private List<DbIndicatorDetails> getIndicatorList() {
@@ -151,7 +317,7 @@ public class IndicatorReferenceImpl implements IndicatorReferenceService {
     }
 
     private DbIndicatorDetails getIndicator(String uid) {
-        List<DbIndicatorDetails> dbIndicatorDetailsList = getIndicatorList();
+        List<DbIndicatorDetails> dbIndicatorDetailsList = resolveIndicatorReferences();
         for (DbIndicatorDetails dbIndicatorDetails : dbIndicatorDetailsList) {
 
             String uuid = (String) dbIndicatorDetails.getUuid();

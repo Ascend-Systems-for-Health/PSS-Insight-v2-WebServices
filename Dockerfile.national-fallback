@@ -1,0 +1,47 @@
+# Reproducible derivative build of the pss_ws_national service for the PSS Insight fork.
+#
+# Why this exists: the Kotlin model layer (the com.intellisoft.pssnationalinstance.Db*
+# classes) was never published to source in this repository, so a clean `mvn package`
+# cannot build the service. This Dockerfile therefore treats the published upstream
+# artifact (intellisoftdev/pss_ws_national:latest) as the binary dependency that carries
+# those compiled models plus all runtime libraries, compiles ONLY the modified Java
+# source against it, and swaps the recompiled classes (and the corrected profile
+# properties) back into the Spring Boot fat jar. Given the base image + the committed
+# source on branch `develop`, the result is fully reproducible.
+#
+# The change itself is additive: the remote International/Hub fetch is untouched and
+# still takes precedence; the local master_indicator_templates fallback only runs when
+# the Hub is unreachable or returns empty.
+
+FROM intellisoftdev/pss_ws_national:latest AS base
+
+# Build stage — JDK 11 to match the base runtime (class file major version 55).
+FROM eclipse-temurin:11-jdk AS builder
+WORKDIR /build
+
+# Published upstream artifact: compiled Kotlin models + all runtime dependencies.
+COPY --from=base /national_javabackend/target/PssNationalInstance.jar app.jar
+RUN mkdir extracted && (cd extracted && jar xf ../app.jar)
+
+# Modified source committed to the fork.
+COPY PssNationalInstance/src/main/java/com/intellisoft/pssnationalinstance/service_impl/impl/IndicatorReferenceImpl.java /build/src/IndicatorReferenceImpl.java
+COPY PssNationalInstance/src/main/resources/application-localdev.properties /build/props/application-localdev.properties
+
+# Compile the modified file against the published classpath (lombok + parameter-names
+# annotation processors run automatically from the bundled jars), then update the fat
+# jar in place. `jar uf` only rewrites the named BOOT-INF/classes entries and preserves
+# the STORED nested-jar layout the Spring Boot loader requires for BOOT-INF/lib.
+RUN set -eu; \
+    CP="extracted/BOOT-INF/classes:$(ls extracted/BOOT-INF/lib/*.jar | tr '\n' ':')"; \
+    javac -parameters -cp "$CP" -d classesout /build/src/IndicatorReferenceImpl.java; \
+    cp app.jar patched.jar; \
+    mkdir -p stage/BOOT-INF/classes; \
+    cp -r classesout/* stage/BOOT-INF/classes/; \
+    cp /build/props/application-localdev.properties stage/BOOT-INF/classes/application-localdev.properties; \
+    (cd stage && jar uf /build/patched.jar BOOT-INF/classes); \
+    echo "--- patched entries ---"; \
+    jar tf patched.jar | grep -E "IndicatorReferenceImpl|application-localdev"
+
+# Final image — identical to base, with the patched jar swapped in.
+FROM base
+COPY --from=builder /build/patched.jar /national_javabackend/target/PssNationalInstance.jar
